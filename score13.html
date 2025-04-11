@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Basketball Voice Scoreboard</title>
+  <style>
+    body {
+      background: #000;
+      color: lime;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .team {
+      font-size: 5rem;
+      margin: 20px;
+      text-shadow: 2px 2px 4px rgba(0, 255, 0, 0.6);
+    }
+    .score {
+      font-size: 10rem;
+      font-weight: bold;
+      color: lime;
+    }
+    .status {
+      margin-top: 20px;
+      font-size: 1.5rem;
+    }
+    .mic-indicator {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      margin-top: 10px;
+    }
+    .controls {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      align-items: flex-end;
+    }
+    .controls button, .controls select {
+      font-size: 1rem;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background-color: #111;
+      color: lime;
+      border: 1px solid lime;
+      cursor: pointer;
+    }
+    .controls button:hover, .controls select:hover {
+      background-color: lime;
+      color: black;
+    }
+    .team-name-inputs {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .team-name-inputs input {
+      font-size: 1.2rem;
+      padding: 5px;
+      border-radius: 6px;
+      border: none;
+      outline: none;
+    }
+    .team-name-inputs button {
+      font-size: 1rem;
+      padding: 5px;
+      border-radius: 6px;
+      background-color: #222;
+      color: lime;
+      border: 1px solid lime;
+      cursor: pointer;
+    }
+    .confetti {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 9999;
+    }
+    .confetti span {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: lime;
+      animation: confetti-fall 2s linear infinite;
+    }
+    @keyframes confetti-fall {
+      0% { transform: translateY(-10px) rotate(0); opacity: 1; }
+      100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="team-name-inputs" id="nameInputs">
+    <input type="text" id="inputTeamA" placeholder="Team A Name" oninput="changeTeamName('A')">
+    <input type="text" id="inputTeamB" placeholder="Team B Name" oninput="changeTeamName('B')">
+    <button onclick="hideInputs()">Done</button>
+  </div>
+
+  <div class="team" id="teamA">Team A: <span class="score" id="scoreA">0</span></div>
+  <div class="team" id="teamB">Team B: <span class="score" id="scoreB">0</span></div>
+  <div class="status" id="status">Say a command...</div>
+  <div class="mic-indicator" id="micIndicator" style="background-color: lime;"></div>
+
+  <div class="controls">
+    <button onclick="toggleMic()"><span id="micToggleText">Mic Off</span></button>
+    <select id="victorySelect" onchange="setVictoryScore(this.value)"></select>
+    <select id="micSelect"></select>
+  </div>
+
+  <div class="confetti" id="confetti"></div>
+
+  <script>
+    let scoreA = 0;
+    let scoreB = 0;
+    let micActive = true;
+    let recognition;
+    let locked = false;
+    let history = [];
+    let victoryScore = 21;
+    let teamAName = 'Team A';
+    let teamBName = 'Team B';
+    let selectedDeviceId = null;
+
+    const scoreAEl = document.getElementById("scoreA");
+    const scoreBEl = document.getElementById("scoreB");
+    const statusEl = document.getElementById("status");
+    const micIndicator = document.getElementById("micIndicator");
+    const micToggleText = document.getElementById("micToggleText");
+    const micSelect = document.getElementById("micSelect");
+
+    const populateVictoryDropdown = () => {
+      const select = document.getElementById("victorySelect");
+      for (let i = 1; i <= 50; i++) {
+        const option = document.createElement("option");
+        option.value = i;
+        option.textContent = `${i} points`;
+        if (i === victoryScore) option.selected = true;
+        select.appendChild(option);
+      }
+    };
+
+    const populateMicList = async () => {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      micSelect.innerHTML = "";
+      devices.filter(d => d.kind === 'audioinput').forEach((device) => {
+        const option = document.createElement("option");
+        option.value = device.deviceId;
+        option.text = device.label || `Microphone ${micSelect.length + 1}`;
+        micSelect.appendChild(option);
+      });
+    };
+
+    micSelect.addEventListener('change', () => {
+      selectedDeviceId = micSelect.value;
+      if (recognition) recognition.stop();
+      initRecognition();
+    });
+
+    const getStream = async () => {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : true
+      });
+    };
+
+    const initRecognition = async () => {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) return showStatus("Speech Recognition not supported");
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = function (event) {
+        const transcript = event.results[event.results.length - 1][0].transcript.trim();
+        processCommand(transcript);
+      };
+
+      recognition.onerror = function (event) {
+        showStatus(`Error: ${event.error}`);
+      };
+
+      recognition.onend = function () {
+        if (micActive && !locked) recognition.start();
+      };
+
+      await getStream();
+      if (micActive) recognition.start();
+    };
+
+    // rest of your script untouched...
+    const updateScores = () => {
+      scoreAEl.textContent = scoreA;
+      scoreBEl.textContent = scoreB;
+    };
+
+    const updateTeamLabels = () => {
+      document.getElementById("teamA").childNodes[0].textContent = `${teamAName}: `;
+      document.getElementById("teamB").childNodes[0].textContent = `${teamBName}: `;
+    };
+
+    const changeTeamName = (team) => {
+      if (team === 'A') teamAName = document.getElementById('inputTeamA').value || 'Team A';
+      else teamBName = document.getElementById('inputTeamB').value || 'Team B';
+      updateTeamLabels();
+    };
+
+    const hideInputs = () => {
+      document.getElementById("nameInputs").style.display = "none";
+    };
+
+    const showStatus = (msg) => {
+      statusEl.textContent = msg;
+    };
+
+    const updateMicIndicator = () => {
+      micIndicator.style.backgroundColor = locked || !micActive ? "red" : "lime";
+      micToggleText.textContent = micActive ? "Mic On" : "Mic Off";
+    };
+
+    const setVictoryScore = (value) => {
+      victoryScore = parseInt(value);
+      showStatus(`Victory score set to ${victoryScore}`);
+    };
+
+    const speak = (text) => {
+      if (!micActive) return;
+      const utterance = new SpeechSynthesisUtterance(text);
+      speechSynthesis.speak(utterance);
+    };
+
+    const toggleMic = () => {
+      micActive = !micActive;
+      if (micActive) recognition.start();
+      else recognition.stop();
+      updateMicIndicator();
+      showStatus(micActive ? "Mic On" : "Mic Off");
+    };
+
+    const celebrate = () => {
+      const confetti = document.getElementById("confetti");
+      for (let i = 0; i < 200; i++) {
+        const dot = document.createElement("span");
+        dot.style.left = `${Math.random() * 100}vw`;
+        dot.style.background = `hsl(${Math.random() * 360}, 100%, 50%)`;
+        confetti.appendChild(dot);
+        setTimeout(() => dot.remove(), 2000);
+      }
+    };
+
+    const checkVictory = () => {
+      if (scoreA >= victoryScore) {
+        speak(`${teamAName} wins!`);
+        showStatus(`${teamAName} wins!`);
+        locked = true;
+        updateMicIndicator();
+        celebrate();
+      } else if (scoreB >= victoryScore) {
+        speak(`${teamBName} wins!`);
+        showStatus(`${teamBName} wins!`);
+        locked = true;
+        updateMicIndicator();
+        celebrate();
+      }
+    };
+
+    const processCommand = (text) => {
+      const lower = text.toLowerCase();
+      if (locked) {
+        if (lower === "delta") {
+          locked = false;
+          showStatus("Resumed");
+          speak("Resumed");
+          updateMicIndicator();
+        } else {
+          showStatus("Locked. Say 'delta' to continue.");
+        }
+        return;
+      }
+
+      if (lower === "team a" || lower === "alpha") {
+        scoreA += 1;
+        history.push("A");
+        updateScores();
+        showStatus(`+1 to ${teamAName}`);
+        speak(`+1 to ${teamAName}`);
+      } else if (lower === "team b" || lower === "bravo") {
+        scoreB += 1;
+        history.push("B");
+        updateScores();
+        showStatus(`+1 to ${teamBName}`);
+        speak(`+1 to ${teamBName}`);
+      } else if (lower === "reset") {
+        scoreA = 0;
+        scoreB = 0;
+        history = [];
+        updateScores();
+        showStatus("Scores reset");
+        speak("Scores reset");
+      } else if (lower === "undo") {
+        const last = history.pop();
+        if (last === "A") scoreA = Math.max(0, scoreA - 1);
+        if (last === "B") scoreB = Math.max(0, scoreB - 1);
+        updateScores();
+        showStatus("Undo successful");
+        speak("Undo successful");
+      } else if (lower === "charlie") {
+        locked = true;
+        showStatus("Paused. Say 'delta' to continue.");
+        speak("Paused");
+        updateMicIndicator();
+      } else {
+        showStatus(`Unrecognized: ${text}`);
+      }
+
+      checkVictory();
+    };
+
+    populateVictoryDropdown();
+    populateMicList();
+    updateMicIndicator();
+    updateTeamLabels();
+    setVictoryScore(victoryScore);
+    initRecognition();
+  </script>
+</body>
+</html>
